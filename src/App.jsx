@@ -6,8 +6,9 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 
 import getCroppedImg from './utils/cropUtils'
+import { DEFAULT_OUTLINE, normalizeOutline } from './utils/outlineUtils'
 import { generatePDF } from './utils/pdfUtils'
-import { generateZip } from './utils/zipUtils'
+import { generateZip, readZipImage } from './utils/zipUtils'
 import { PAPER_PRESETS, DEFAULT_PRESET_ID } from './config/paperPresets'
 import StickerSheet from './components/sticker-sheet/StickerSheet'
 import CropModal from './components/modals/CropModal'
@@ -20,16 +21,17 @@ function App() {
   const [images, setImages] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const fileInputRef = useRef(null);
+  const imagesRef = useRef(images);
 
   // Paper Config State
   const [paperConfig, setPaperConfig] = useState(PAPER_PRESETS[DEFAULT_PRESET_ID]);
-  const [isPaperSetupOpen, setIsPaperSetupOpen] = useState(false);
+  const [isPaperSetupOpen, setIsPaperSetupOpen] = useState(() => !localStorage.getItem('hasSeenPaperSetup'));
   const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
 
   // Global Settings
   const [globalBackground, setGlobalBackground] = useState('#ffffff');
   // fitMode: 'cover' (Fill/Crop) vs 'contain' (Fit/Full Length)
-  const [fitMode, setFitMode] = useState('cover');
+  const [fitMode] = useState('cover');
 
   // Cropper State
   const [crop, setCrop] = useState({ x: 0, y: 0 });
@@ -37,6 +39,9 @@ function App() {
   const [rotation, setRotation] = useState(0);
   const [flip, setFlip] = useState({ horizontal: false, vertical: false });
   const [backgroundColor, setBackgroundColor] = useState('#ffffff');
+  const [outline, setOutline] = useState({ ...DEFAULT_OUTLINE });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [imgFitMode, setImgFitMode] = useState('cover'); // Local editor state
   const [stickerSize, setStickerSize] = useState('half'); // Local editor state
   const [quantity, setQuantity] = useState(1); // Local editor state
@@ -51,10 +56,11 @@ function App() {
   );
 
   // --- Blob URL Cleanup ---
+  useEffect(() => { imagesRef.current = images; }, [images]);
+
   useEffect(() => {
     return () => {
-      // Cleanup on verify
-      images.forEach(img => {
+      imagesRef.current.forEach(img => {
         if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
         if (img.croppedSrc && img.croppedSrc.startsWith('blob:')) URL.revokeObjectURL(img.croppedSrc);
       });
@@ -63,11 +69,7 @@ function App() {
 
   // First time setup check
   useEffect(() => {
-    const hasSeen = localStorage.getItem('hasSeenPaperSetup');
-    if (!hasSeen) {
-      setIsPaperSetupOpen(true);
-      localStorage.setItem('hasSeenPaperSetup', 'true');
-    }
+    localStorage.setItem('hasSeenPaperSetup', 'true');
   }, []);
 
   // Dropzone handler
@@ -83,6 +85,7 @@ function App() {
         rotation: 0,
         flip: { horizontal: false, vertical: false },
         backgroundColor: globalBackground,
+        outline: { ...DEFAULT_OUTLINE },
         quantity: 1,
         name: file.name,
         fitMode: fitMode,
@@ -147,6 +150,9 @@ function App() {
       setRotation(img.rotation || 0);
       setFlip(img.flip || { horizontal: false, vertical: false });
       setBackgroundColor(img.backgroundColor || '#ffffff');
+      setOutline(normalizeOutline(img.outline));
+      setSaveError('');
+      setCroppedAreaPixels(img.pixelCrop || null);
       setImgFitMode(img.fitMode || 'cover');
       setStickerSize(img.stickerSize || 'half');
       setQuantity(img.quantity || 1);
@@ -157,16 +163,19 @@ function App() {
     setCroppedAreaPixels(croppedAreaPixels)
   }, []);
 
-  const saveCrop = async () => {
+  const saveCrop = async (preparedSrc) => {
     if (!editingId || !croppedAreaPixels) return;
     const img = images.find(i => i.id === editingId);
+    setIsSaving(true);
+    setSaveError('');
     try {
       const croppedBase64 = await getCroppedImg(
         img.src,
         croppedAreaPixels,
         rotation,
         flip,
-        backgroundColor
+        outline,
+        preparedSrc
       );
 
       const res = await fetch(croppedBase64);
@@ -184,6 +193,8 @@ function App() {
         rotation,
         flip,
         backgroundColor,
+        outline: normalizeOutline(outline),
+        pixelCrop: croppedAreaPixels,
         fitMode: imgFitMode,
         stickerSize: stickerSize,
         quantity: quantity
@@ -191,6 +202,9 @@ function App() {
       setEditingId(null);
     } catch (e) {
       console.error(e);
+      setSaveError('Could not save this sticker. Please try again.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -223,22 +237,29 @@ function App() {
             items.sort((a, b) => (a.order || 0) - (b.order || 0));
 
             for (const item of items) {
-              let zipFile = zip.file(`stickers/${item.filename}`);
+              let zipFile = item.sourceFilename ? zip.file(item.sourceFilename) : null;
+              if (!zipFile) zipFile = zip.file(`stickers/${item.filename}`);
               if (!zipFile) zipFile = zip.file(item.filename);
 
               if (zipFile) {
-                const fileData = await zipFile.async('blob');
+                const fileData = await readZipImage(zipFile, item.sourceFilename || item.filename);
                 const objectUrl = URL.createObjectURL(fileData);
+                const processedFile = item.processedFilename ? zip.file(item.processedFilename) : null;
+                const croppedSrc = processedFile
+                  ? URL.createObjectURL(await readZipImage(processedFile, item.processedFilename))
+                  : null;
 
                 newImages.push({
                   id: item.id || Math.random().toString(36).substr(2, 9),
                   src: objectUrl,
-                  croppedSrc: null,
+                  croppedSrc,
                   crop: item.editSettings?.crop || { x: 0, y: 0 },
                   zoom: item.editSettings?.zoom || 1,
                   rotation: item.editSettings?.rotation || 0,
                   flip: item.editSettings?.flip || { horizontal: false, vertical: false },
                   backgroundColor: item.backgroundColor || globalBackground,
+                  outline: normalizeOutline(item.outline),
+                  pixelCrop: item.editSettings?.pixelCrop || null,
                   quantity: item.quantity || 1,
                   name: item.originalName || item.filename,
                   fitMode: item.fitMode || 'cover',
@@ -263,7 +284,7 @@ function App() {
         for (const filename of entries) {
           if (!filename.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i)) continue;
 
-          const fileData = await zip.files[filename].async('blob');
+          const fileData = await readZipImage(zip.files[filename], filename);
           const objectUrl = URL.createObjectURL(fileData);
 
           newImages.push({
@@ -275,6 +296,7 @@ function App() {
             rotation: 0,
             flip: { horizontal: false, vertical: false },
             backgroundColor: globalBackground,
+            outline: { ...DEFAULT_OUTLINE },
             quantity: 1,
             name: filename.replace(/\.[^/.]+$/, ""),
             fitMode: fitMode,
@@ -391,7 +413,7 @@ function App() {
             pixelCrop,
             0, // rotation
             img.flip || { horizontal: false, vertical: false },
-            img.backgroundColor || '#ffffff'
+            img.outline
           );
 
           const res = await fetch(croppedBase64);
@@ -406,6 +428,8 @@ function App() {
           return {
             ...img,
             croppedSrc: croppedBlobUrl,
+            pixelCrop,
+            rotation: 0,
             crop: { x: 0, y: 0 }, // Reset UI crop to center since it's baked in
             zoom: zoomValue
           };
@@ -431,7 +455,7 @@ function App() {
     <div className="container">
       <header>
         <div className="header-content">
-          <h1>Sticker Sheet Creator</h1>
+          <h1>Sticker Sheet Creator <span className="fork-badge">Outline edition</span></h1>
           <div className="config-section">
             <button className="config-pill" onClick={() => setIsPaperSetupOpen(true)} title="Configure Paper & Grid">
               <Settings size={16} />
@@ -507,6 +531,7 @@ function App() {
       </div>
 
       <CropModal
+        key={editingId || 'closed'}
         editingImage={editingImage}
         paperConfig={paperConfig}
         crop={crop}
@@ -514,6 +539,10 @@ function App() {
         rotation={rotation}
         flip={flip}
         backgroundColor={backgroundColor}
+        outline={outline}
+        setOutline={setOutline}
+        isSaving={isSaving}
+        saveError={saveError}
         imgFitMode={imgFitMode}
         stickerSize={stickerSize}
         quantity={quantity}
