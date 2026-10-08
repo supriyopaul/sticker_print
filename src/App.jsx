@@ -7,6 +7,7 @@ import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSo
 
 import getCroppedImg from './utils/cropUtils'
 import { DEFAULT_OUTLINE, normalizeOutline } from './utils/outlineUtils'
+import { readOutlinePreferences, rememberOutlinePreferences } from './utils/outlinePreferences'
 import { generatePDF } from './utils/pdfUtils'
 import { generateZip, readZipImage } from './utils/zipUtils'
 import { PAPER_PRESETS, DEFAULT_PRESET_ID } from './config/paperPresets'
@@ -85,7 +86,7 @@ function App() {
         rotation: 0,
         flip: { horizontal: false, vertical: false },
         backgroundColor: globalBackground,
-        outline: { ...DEFAULT_OUTLINE },
+        outline: readOutlinePreferences(),
         quantity: 1,
         name: file.name,
         fitMode: fitMode,
@@ -150,7 +151,9 @@ function App() {
       setRotation(img.rotation || 0);
       setFlip(img.flip || { horizontal: false, vertical: false });
       setBackgroundColor(img.backgroundColor || '#ffffff');
-      setOutline(normalizeOutline(img.outline));
+      const savedOutline = normalizeOutline(img.outline);
+      const preferences = readOutlinePreferences(undefined, savedOutline);
+      setOutline(savedOutline.enabled ? savedOutline : preferences);
       setSaveError('');
       setCroppedAreaPixels(img.pixelCrop || null);
       setImgFitMode(img.fitMode || 'cover');
@@ -158,6 +161,15 @@ function App() {
       setQuantity(img.quantity || 1);
     }
   }, [images]);
+
+  const handleOutlineChange = (updates) => {
+    const base = updates.enabled === true && !outline.enabled
+      ? readOutlinePreferences()
+      : outline;
+    const nextOutline = normalizeOutline({ ...base, ...updates });
+    setOutline(nextOutline);
+    if (nextOutline.enabled) rememberOutlinePreferences(nextOutline);
+  };
 
   const onCropComplete = useCallback((croppedArea, croppedAreaPixels) => {
     setCroppedAreaPixels(croppedAreaPixels)
@@ -199,6 +211,7 @@ function App() {
         stickerSize: stickerSize,
         quantity: quantity
       });
+      if (outline.enabled) rememberOutlinePreferences(outline);
       setEditingId(null);
     } catch (e) {
       console.error(e);
@@ -296,7 +309,7 @@ function App() {
             rotation: 0,
             flip: { horizontal: false, vertical: false },
             backgroundColor: globalBackground,
-            outline: { ...DEFAULT_OUTLINE },
+            outline: readOutlinePreferences(),
             quantity: 1,
             name: filename.replace(/\.[^/.]+$/, ""),
             fitMode: fitMode,
@@ -540,7 +553,7 @@ function App() {
         flip={flip}
         backgroundColor={backgroundColor}
         outline={outline}
-        setOutline={setOutline}
+        onOutlineChange={handleOutlineChange}
         isSaving={isSaving}
         saveError={saveError}
         imgFitMode={imgFitMode}

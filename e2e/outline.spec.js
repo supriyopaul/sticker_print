@@ -4,6 +4,35 @@ import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
 
 const fixture = name => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
+const preferencesKey = 'sticker_print:lastOutlineSettings';
+
+async function setRange(page, selector, value) {
+    await page.locator(selector).evaluate((input, nextValue) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(nextValue));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value);
+}
+
+const rememberedAppearance = { color: '#16a34a', width: 3.75, mode: 'solid', tolerance: 58, removeBackground: false };
+
+async function chooseRememberedAppearance(page) {
+    await enableOutline(page, rememberedAppearance.color);
+    await setRange(page, '#outline-width', rememberedAppearance.width);
+    await page.locator('#outline-mode').selectOption(rememberedAppearance.mode);
+    await setRange(page, '#outline-tolerance', rememberedAppearance.tolerance);
+    await page.getByLabel('Replace detected background').uncheck();
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+}
+
+async function expectRememberedAppearance(page, appearance = rememberedAppearance) {
+    await expect(page.locator('#outline-color')).toHaveValue(appearance.color);
+    await expect(page.locator('#outline-width')).toHaveValue(String(appearance.width));
+    await expect(page.locator('#outline-mode')).toHaveValue(appearance.mode);
+    await expect(page.locator('#outline-tolerance')).toHaveValue(String(appearance.tolerance));
+    await expect(page.getByLabel('Replace detected background')).toBeChecked({ checked: appearance.removeBackground });
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+}
 
 test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('hasSeenPaperSetup', 'true'));
@@ -209,4 +238,106 @@ test('outline keeps high-resolution detail, translucent interiors, and guards hu
     expect(result.translucent).toEqual(result.original);
     expect(result.retained).toEqual(result.original);
     expect(result.oversized).toContain('resize this image');
+});
+
+test('enabling another sticker or re-enabling an outline uses the latest appearance', async ({ page }) => {
+    // Both images exist before the user picks defaults; upload-time snapshots
+    // must not prevent the second sticker from using the latest preferences.
+    await page.locator('.dropzone input[type="file"]').setInputFiles([
+        fixture('solid-object.svg'), fixture('transparent-object.svg')
+    ]);
+    await page.locator('.sticker-slot img').nth(0).click();
+    await chooseRememberedAppearance(page);
+    await page.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.locator('.sticker-slot img').nth(1).click();
+    await expect(page.getByLabel('Add a colored outline around the object')).not.toBeChecked();
+    await page.getByLabel('Add a colored outline around the object').check();
+    await expectRememberedAppearance(page);
+    await page.locator('#outline-color').fill('#ff8800');
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // An already-outlined sticker retains its own saved appearance on open.
+    await page.locator('.sticker-slot img').nth(0).click();
+    await expectRememberedAppearance(page);
+    await page.getByLabel('Add a colored outline around the object').uncheck();
+    await page.getByLabel('Add a colored outline around the object').check();
+    await expectRememberedAppearance(page, { ...rememberedAppearance, color: '#ff8800' });
+});
+
+test('last-used settings survive cancellation and a browser refresh without enabling new stickers', async ({ page }) => {
+    await editFixture(page, 'solid-object.svg');
+    await chooseRememberedAppearance(page);
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(await countGreen(page, '.sticker-slot img')).toBe(0);
+    const stored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), preferencesKey);
+    expect(stored).toEqual({ ...rememberedAppearance, enabled: false });
+
+    await page.reload();
+    await editFixture(page, 'solid-object.svg');
+    await expect(page.getByLabel('Add a colored outline around the object')).not.toBeChecked();
+    await page.getByLabel('Add a colored outline around the object').check();
+    await expectRememberedAppearance(page);
+    expect(await countGreen(page, '.reactEasyCrop_Image')).toBeGreaterThan(100);
+});
+
+test('invalid stored outline defaults fall back without breaking the editor', async ({ page }) => {
+    await page.evaluate(key => localStorage.setItem(key, '{invalid-json'), preferencesKey);
+    await page.reload();
+    await editFixture(page);
+    await page.getByLabel('Add a colored outline around the object').check();
+    await expect(page.locator('#outline-color')).toHaveValue('#7c3aed');
+    await expect(page.locator('#outline-width')).toHaveValue('1.5');
+    await expect(page.locator('#outline-mode')).toHaveValue('auto');
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+});
+
+test('previously outlined stickers seed defaults if no remembered preferences exist yet', async ({ page }) => {
+    const zip = new JSZip();
+    zip.file('original.svg', await readFile(fixture('solid-object.svg')));
+    zip.file('metadata.json', JSON.stringify({
+        version: '2.0', items: [{
+            id: 'existing-outline', filename: 'original.svg', quantity: 1,
+            outline: { ...rememberedAppearance, enabled: true }
+        }]
+    }));
+    await page.locator('input[accept=".zip"]').setInputFiles({
+        name: 'existing-outline.zip', mimeType: 'application/zip',
+        buffer: await zip.generateAsync({ type: 'nodebuffer' })
+    });
+    await page.locator('.sticker-slot img').first().click();
+    await expectRememberedAppearance(page);
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.locator('.dropzone input[type="file"]').setInputFiles(fixture('solid-object.svg'));
+    await page.locator('.sticker-slot img').nth(1).click();
+    await page.getByLabel('Add a colored outline around the object').check();
+    await expectRememberedAppearance(page);
+});
+
+test('blocked preference storage still remembers the appearance during the session', async ({ page }) => {
+    await page.addInitScript(key => {
+        const get = Storage.prototype.getItem;
+        const set = Storage.prototype.setItem;
+        Storage.prototype.getItem = function (name) {
+            if (name === key) throw new Error('Storage disabled');
+            return get.call(this, name);
+        };
+        Storage.prototype.setItem = function (name, value) {
+            if (name === key) throw new Error('Storage disabled');
+            return set.call(this, name, value);
+        };
+    }, preferencesKey);
+    await page.reload();
+    await editFixture(page, 'solid-object.svg');
+    await chooseRememberedAppearance(page);
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    // Browsers do not fire change when the same file is selected twice.
+    await page.locator('.dropzone input[type="file"]').setInputFiles([]);
+    await page.locator('.dropzone input[type="file"]').setInputFiles(fixture('solid-object.svg'));
+    await page.locator('.sticker-slot img').nth(1).click();
+    await page.getByLabel('Add a colored outline around the object').check();
+    await expectRememberedAppearance(page);
 });

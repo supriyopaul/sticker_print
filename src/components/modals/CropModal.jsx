@@ -12,7 +12,7 @@ const CropModal = ({
     flip,
     backgroundColor,
     outline,
-    setOutline,
+    onOutlineChange,
     isSaving,
     saveError,
     stickerSize,
@@ -50,7 +50,7 @@ const CropModal = ({
     const processing = outline.enabled && preview?.key !== previewKey;
     const currentPreview = outline.enabled && preview?.key === previewKey ? preview : null;
     const previewSource = currentPreview?.src || source;
-    const updateOutline = updates => setOutline(previous => ({ ...previous, ...updates }));
+    const updateOutline = onOutlineChange;
 
     // Calculate Aspect Ratio based on Paper Config and Sticker Mode
     const aspect = useMemo(() => {
@@ -316,6 +316,7 @@ const CropModal = ({
                             <p className="outline-hint">Best for transparent artwork or a plain background, not complex photos. Thickness is relative to image size and scales with zoom. Edges at the image boundary may be clipped.</p>
                         </>
                     )}
+                    <p className="outline-hint">Your last-used color, thickness, detection, tolerance, and background option are remembered in this browser and reused when you enable an outline.</p>
                 </fieldset>
 
                 {/* Row 4: Zoom */}

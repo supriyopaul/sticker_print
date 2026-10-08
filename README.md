@@ -7,6 +7,7 @@ GitHub fork: [supriyopaul/sticker_print](https://github.com/supriyopaul/sticker_
 Upload an image and click its edit button or its sheet preview. **Object outline** is beside **Background**, **Zoom**, and **Rotate**:
 
 - Enable the outline and choose its color and thickness (0.25–5% of the image's shorter side). Thickness scales with zoom.
+- The last-used outline color, thickness, detection mode, tolerance, and background option are remembered in this browser, including after a refresh. Enabling an outline reuses those settings; new stickers still start with the outline off. Already outlined stickers keep their own saved settings when reopened. Changing an outline control updates these defaults immediately; Cancel leaves the sticker unchanged but keeps the last-used defaults.
 - **Auto** uses existing transparency, or detects a dominant solid color around the image's edges. **Transparency only** and **Solid background** let you choose explicitly.
 - **Tolerance** controls how close pixels must be to the detected background color. Only connected background pixels reaching an image edge are removed; enclosed same-color object details are retained.
 - Choose whether to replace the detected background with the selected sticker background or keep the original background behind the outline.
